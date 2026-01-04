@@ -11,6 +11,7 @@ import { Alert, TextInput, Modal } from 'react-native';
 import VoiceService from './src/services/VoiceService';
 import ChatService from './src/services/ChatService';
 import VoiceWebView from './src/components/VoiceWebView';
+import * as ImageManipulator from 'expo-image-manipulator';
 
 export default function App() {
   const [status, setStatus] = useState('Initializing...');
@@ -19,6 +20,7 @@ export default function App() {
   const [isLive, setIsLive] = useState(false);
   const cameraRef = useRef(null);
   const liveLoopRef = useRef(null);
+  const chatActiveRef = useRef(false);
   const [location, setLocation] = useState(null);
   const [showMap, setShowMap] = useState(false);
   const [destination, setDestination] = useState('');
@@ -30,39 +32,17 @@ export default function App() {
   const [isConfirmingVoice, setIsConfirmingVoice] = useState(false);
 
   // Handle incoming live alerts from WebSocket
+  // Handle incoming live alerts from Groq (Now simple text)
   const handleLiveAlert = async (guidance) => {
     try {
-      let finalGuidance = '';
-      let direction = 'CENTER';
-      let distance = 1.0;
-      let priority = 'NORMAL';
-
-      let cleanGuidance = guidance.trim();
-      if (cleanGuidance.includes('```')) {
-        cleanGuidance = cleanGuidance.replace(/```json\n?|\n?```/g, '').trim();
-      }
-
-      const spatialData = JSON.parse(cleanGuidance);
-      direction = spatialData.direction || 'CENTER';
-      finalGuidance = spatialData.object || '';
-      distance = parseFloat(spatialData.distance) || 1.0;
-      priority = spatialData.priority || 'NORMAL';
-
-      if (finalGuidance) {
-        const isUrgent = priority === 'URGENT';
-        await AudioService.playSpatialCue(direction, distance, isUrgent);
-
-        // Small delay to let the directional ping settle before speaking
-        setTimeout(async () => {
-          await AudioService.speak(finalGuidance);
-          setStatus(`${priority}: ${finalGuidance} (${distance}m ${direction})`);
-        }, 300);
+      if (guidance && guidance.trim().length > 0) {
+        // calculated priority based on keywords? optional.
+        // For now, just speak it.
+        await AudioService.speak(guidance);
+        setStatus(guidance.toUpperCase());
       }
     } catch (e) {
-      if (guidance.length < 50) {
-        await AudioService.speak(guidance);
-        setStatus(`AI: ${guidance}`);
-      }
+      console.error("ALERT_ERROR", e);
     }
   };
 
@@ -72,19 +52,35 @@ export default function App() {
     try {
       setIsAnalyzing(true);
 
-      const photo = await cameraRef.current.takePictureAsync({
-        base64: true,
-        quality: 0.2, // Slightly higher quality but still fast
+      // 1. Capture with timeout (prevent camera hang)
+      const cameraPromise = cameraRef.current.takePictureAsync({
+        base64: false,
         shutterSound: false,
-        skipProcessing: true // CRITICAL: This bypasses orientation correction etc for speed
+        skipProcessing: true
       });
+      const camTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error('CAM_TIMEOUT')), 2000));
 
-      const guidance = await GroqService.analyzeImage(photo.base64);
+      const photo = await Promise.race([cameraPromise, camTimeout]);
+
+      // 2. Resize
+      const manipResult = await ImageManipulator.manipulateAsync(
+        photo.uri,
+        [{ resize: { width: 224 } }],
+        { compress: 0.5, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+      );
+
+      // 3. API Call with timeout
+      const apiTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error('API_TIMEOUT')), 8000));
+      const guidance = await Promise.race([
+        GroqService.analyzeImage(manipResult.base64),
+        apiTimeout
+      ]);
 
       handleLiveAlert(guidance);
     } catch (error) {
-      console.error("ANALYSIS_ERROR:", error);
-      console.error("ERROR_STACK:", error.stack);
+      if (error.message !== 'CAM_TIMEOUT' && error.message !== 'API_TIMEOUT') {
+        console.error("LOOP_ERROR:", error);
+      }
     } finally {
       setIsAnalyzing(false);
     }
@@ -134,13 +130,18 @@ export default function App() {
     }
   }, [location, isNavigating]);
 
-  const handleStartNavigation = async () => {
-    if (!destination) return;
+  const handleStartNavigation = async (targetOverride = null) => {
+    const targetDest = targetOverride || destination;
+    if (!targetDest) return;
+
+    // Stop chat if running, as navigation takes over audio
+    if (chatActiveRef.current) await stopChatSession();
+
     setShowSearch(false);
     setIsConfirmingVoice(false);
-    AudioService.speak(`Searching for ${destination}`);
+    AudioService.speak(`Searching for ${targetDest}`);
 
-    const target = await MapUtils.geocode(destination);
+    const target = await MapUtils.geocode(targetDest);
     if (target && location) {
       const route = await MapUtils.getDirections(location, target);
       if (route) {
@@ -156,34 +157,84 @@ export default function App() {
     }
   };
 
-  const startChatSession = async () => {
-    setIsChatting(true);
-    AudioService.speak("Waking up Navia.");
+  const stopChatSession = async () => {
+    chatActiveRef.current = false;
+    setIsChatting(false);
+    setIsListening(false);
+    await VoiceService.stopListening();
+    AudioService.stop();
+    // AudioService.speak("Chat ended."); // Optional confirmation
+    setStatus("Ready");
+  };
+
+  const runChatLoop = async () => {
+    if (!chatActiveRef.current) return;
 
     await VoiceService.startListening(
       async (result) => {
+        // onResult
         setIsListening(false);
+        if (!chatActiveRef.current) return;
+
         setStatus(`Navia Thinking...`);
 
-        const response = await ChatService.getChatResponse(result, location);
-        AudioService.speak(response);
-        setStatus(`Navia: ${response}`);
-        setIsChatting(false);
+        const responseObj = await ChatService.getChatResponse(result, location);
+
+        if (!chatActiveRef.current) return;
+
+        setStatus(`Navia: ${responseObj.text}`);
+        await AudioService.speak(responseObj.text);
+
+        // Handle Navigation Intent
+        if (responseObj.navTarget) {
+          setDestination(responseObj.navTarget);
+          await handleStartNavigation(responseObj.navTarget);
+          return; // Exit loop since navigation took over
+        }
+
+        // Loop: Listen again if still active
+        if (chatActiveRef.current) {
+          runChatLoop();
+        }
       },
       (error) => {
+        // onError
         setIsListening(false);
-        setIsChatting(false);
+        if (!chatActiveRef.current) return;
+
         if (error === 'INITIALIZING') {
-          AudioService.speak("Voice assistant is still connecting. Please wait a few seconds.");
+          setTimeout(() => { if (chatActiveRef.current) runChatLoop(); }, 1000);
         } else {
-          AudioService.speak("I missed that. Please try again.");
+          // If error (silence usually), try again or prompt?
+          // Ideally we don't spam if it's constantly erroring.
+          // Let's try to prompt once and continue.
+          console.log("Chat Loop Error:", error);
+          // Just listen again silently or maybe give up after N retries?
+          // For simple "continuous", we'll just try again.
+          if (chatActiveRef.current) {
+            runChatLoop();
+          }
         }
       },
       () => {
-        setIsListening(true);
-        AudioService.speak("How can I help?");
+        // onStart
+        if (chatActiveRef.current) {
+          setIsListening(true);
+        }
       }
     );
+  };
+
+  const toggleChatSession = async () => {
+    if (isChatting) {
+      await stopChatSession();
+    } else {
+      setIsChatting(true);
+      chatActiveRef.current = true;
+      AudioService.speak("I'm listening.").then(() => {
+        runChatLoop();
+      });
+    }
   };
 
   const startVoiceSearch = async () => {
@@ -236,9 +287,9 @@ export default function App() {
 
       await analyzeEnvironment();
 
-      // Reliable 500ms delay for Groq
+      // Reliable delay for hardware reset
       if (isActive && isLive) {
-        liveLoopRef.current = setTimeout(runLiveLoop, 500);
+        liveLoopRef.current = setTimeout(runLiveLoop, 200);
       }
     };
 
@@ -299,19 +350,23 @@ export default function App() {
 
         <TouchableOpacity
           style={styles.smallButton}
-          onPress={() => setShowSearch(true)}
+          onPress={async () => {
+            if (isChatting) await stopChatSession();
+            setShowSearch(true);
+          }}
           accessibilityLabel="Set Destination"
         >
           <Text style={styles.buttonText}>GOAL</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.smallButton, isChatting && styles.buttonActive]}
-          onPress={startChatSession}
+          style={[styles.smallButton, isChatting && styles.buttonActive, isChatting && { backgroundColor: '#c00', borderColor: '#f00' }]}
+          onPress={toggleChatSession}
           accessibilityLabel="Chat with Navia Assistant"
-          disabled={isListening}
         >
-          <Text style={styles.buttonText}>{isListening && isChatting ? '...' : 'CHAT'}</Text>
+          <Text style={styles.buttonText}>
+            {isChatting ? (isListening ? 'LISTENING...' : 'STOP CHAT') : 'CHAT'}
+          </Text>
         </TouchableOpacity>
       </View>
 

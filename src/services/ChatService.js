@@ -6,7 +6,7 @@ class ChatService {
         this.groq = null;
         this.model = "llama-3.1-8b-instant"; // Fast, supported conversational model
         this.history = [
-            { role: "system", content: "You are Navia, a friendly and empathetic voice assistant for the visually impaired. Keep responses concise (under 30 words), helpful, and conversational. Use a natural tone as if chatting with a friend. If asked about surroundings, acknowledge you are also monitoring for safety." }
+            { role: "system", content: "You are Navia, a friendly and empathetic voice assistant for the visually impaired. Keep responses concise (under 30 words). If the user asks to navigate to a place, start your response with 'NAVIGATE_TO: [Place Name] | ' followed by a confirmation. Example: 'NAVIGATE_TO: Starbucks | Okay, getting directions to Starbucks.'." }
         ];
 
         if (this.apiKey && this.apiKey !== "placeholder_key") {
@@ -25,7 +25,7 @@ class ChatService {
             this.groq = new Groq({ apiKey: this.apiKey, dangerouslyAllowBrowser: true });
         }
 
-        if (!this.groq) return "Assistant is not configured. Please check API key.";
+        if (!this.groq) return { text: "Assistant is not configured. Please check API key." };
 
         try {
             // Add user message to history
@@ -45,15 +45,30 @@ class ChatService {
                 max_tokens: 150,
             });
 
-            const assistantMessage = response.choices[0].message.content;
-            this.history.push({ role: "assistant", content: assistantMessage });
+            const rawMessage = response.choices[0].message.content;
 
-            return assistantMessage;
+            // Parse for navigation command
+            let text = rawMessage;
+            let navTarget = null;
+
+            if (rawMessage.includes('NAVIGATE_TO:')) {
+                const parts = rawMessage.split('|');
+                // Part 0: NAVIGATE_TO: Place
+                // Part 1: Confirmation text
+                const commandPart = parts[0];
+                navTarget = commandPart.replace('NAVIGATE_TO:', '').trim();
+                text = parts[1] ? parts[1].trim() : `Navigating to ${navTarget}`;
+            }
+
+            this.history.push({ role: "assistant", content: rawMessage }); // Log raw for context
+
+            return { text, navTarget };
         } catch (error) {
             console.error("Chat Service Error:", error);
-            return "I'm having trouble connecting right now.";
+            return { text: "I'm having trouble connecting right now." };
         }
     }
+
 
     resetHistory() {
         this.history = [this.history[0]];

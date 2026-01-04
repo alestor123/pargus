@@ -4,7 +4,7 @@ class GroqService {
     constructor() {
         this.apiKey = "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";
         this.groq = null;
-        this.model = "meta-llama/llama-4-scout-17b-16e-instruct"; // Latest multimodal model
+        this.model = "meta-llama/llama-4-scout-17b-16e-instruct"; // Latest supported vision model 2026
 
         if (this.apiKey !== "YOUR_GROQ_API_KEY_HERE" && this.apiKey !== "") {
             this.groq = new Groq({ apiKey: this.apiKey });
@@ -22,15 +22,9 @@ class GroqService {
         }
 
         try {
-            const prompt = `You are Navia, a safety intelligence layer for visually impaired navigation. 
-Interpret camera detections, prioritize urgent obstacles, and generate clear, human-friendly voice alerts. 
-RULES:
-1. VOICE-FIRST: Object description MUST be natural (e.g., "Car on your right", "Person ahead").
-2. CONCISE: Response MUST be under 6 words to allow quick reaction.
-3. PRIORITIZE: Vehicles > Stairs > People > Static objects.
-4. SAFETY OVERRIDES: Alert immediately for path blockage.
-5. JSON FORMAT: {"object": "natural voice alert", "direction": "LEFT|RIGHT|CENTER", "distance": number, "priority": "URGENT|NORMAL"}.
-6. ALERT RANGE: Only alert if obstacle is < 4m ahead.`;
+            const prompt = `Describe the most critical obstacle or path status in front of the visually impaired user in under 6 words. 
+            Examples: "Clear path", "Car ahead", "Stairs going down", "Person blocking path". 
+            Be direct and urgent.`;
 
             const response = await this.groq.chat.completions.create({
                 messages: [
@@ -48,7 +42,6 @@ RULES:
                     },
                 ],
                 model: this.model,
-                response_format: { type: "json_object" }
             });
 
             return response.choices[0].message.content;

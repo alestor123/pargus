@@ -4,6 +4,21 @@ import { Audio } from 'expo-av';
 class AudioService {
     constructor() {
         this.pingUrl = 'https://assets.mixkit.co/active_storage/sfx/2568/2568-preview.mp3'; // High-pitched ping
+        this.configureAudio();
+    }
+
+    async configureAudio() {
+        try {
+            await Audio.setAudioModeAsync({
+                allowsRecordingIOS: false,
+                playsInSilentModeIOS: true,
+                staysActiveInBackground: true,
+                shouldDuckAndroid: true,
+                playThroughEarpieceAndroid: false
+            });
+        } catch (e) {
+            console.error("AUDIO_CONFIG_ERROR:", e);
+        }
     }
 
     async playSpatialCue(direction, distance = 1.0, isUrgent = false) {
@@ -46,14 +61,29 @@ class AudioService {
         // Clean text: remove brackets, semicolons, and other punctuation that TTS might pronounce
         const cleanText = text.replace(/[\[\];:,]/g, '').trim();
 
+        // INTERRUPT: Always stop previous speech to ensure fresh real-time updates
+        Speech.stop();
+
         return new Promise((resolve) => {
+            let hasResolved = false;
+            const safeResolve = () => {
+                if (!hasResolved) {
+                    hasResolved = true;
+                    resolve();
+                }
+            };
+
             Speech.speak(cleanText, {
                 language: 'en',
                 pitch: 1.0,
                 rate: 1.0,
-                onDone: () => resolve(),
-                onError: () => resolve(), // Resolve on error too to prevent hung loops
+                onDone: safeResolve,
+                onError: safeResolve,
+                onStopped: safeResolve
             });
+
+            // Safety timeout: If TTS hangs, resolve anyway after 3s so we don't block
+            setTimeout(safeResolve, 3000);
         });
     }
 
