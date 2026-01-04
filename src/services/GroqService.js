@@ -2,7 +2,7 @@ import Groq from "groq-sdk";
 
 class GroqService {
     constructor() {
-        this.apiKey = "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";
+        this.apiKey = "";
         this.groq = null;
         this.model = "meta-llama/llama-4-scout-17b-16e-instruct"; // Latest supported vision model 2026
 
