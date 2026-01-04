@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, View, Text, StatusBar, TouchableOpacity, ActivityIndicator, Linking, Dimensions } from 'react-native';
+import { StyleSheet, View, Text, StatusBar, TouchableOpacity, ActivityIndicator, Linking, Dimensions, Vibration } from 'react-native';
 import CameraView from './src/components/CameraView';
 import AudioService from './src/services/AudioService';
 import GroqService from './src/services/GroqService';
@@ -30,13 +30,40 @@ export default function App() {
   const [isListening, setIsListening] = useState(false);
   const [isChatting, setIsChatting] = useState(false);
   const [isConfirmingVoice, setIsConfirmingVoice] = useState(false);
+  const [isSearchingRoute, setIsSearchingRoute] = useState(false); // NEW: Loading state for route search
 
-  // Handle incoming live alerts from Groq (Now simple text)
+  // Smart alert filtering
+  const lastGuidanceRef = useRef('');
+  
+  // Alert history for display
+  const [alertHistory, setAlertHistory] = useState([]);
+  const [lastAlertTime, setLastAlertTime] = useState(null);
+
+  // Handle incoming live alerts from Groq with smart filtering
   const handleLiveAlert = async (guidance) => {
     try {
       if (guidance && guidance.trim().length > 0) {
-        await AudioService.speak(guidance);
+        const now = Date.now();
+        
+        // ALWAYS update status display (show text even if not speaking)
         setStatus(guidance.toUpperCase());
+        setLastAlertTime(now);
+        
+        // Update alert history (keep last 3)
+        setAlertHistory(prev => {
+          const newHistory = [guidance, ...prev.slice(0, 2)];
+          return newHistory;
+        });
+        
+        // SMART FILTER: Only speak if guidance has CHANGED
+        if (guidance !== lastGuidanceRef.current) {
+          // Haptic feedback for new alerts
+          Vibration.vibrate(100);
+          
+          await AudioService.speak(guidance);
+          lastGuidanceRef.current = guidance;
+        }
+        // If same as before, silently skip audio (but text still shows)
       }
     } catch (e) {
       console.error("ALERT_ERROR", e);
@@ -88,10 +115,18 @@ export default function App() {
     setIsLive(nextLive);
 
     if (nextLive) {
+      // Reset tracking when starting live mode
+      lastGuidanceRef.current = '';
+      setAlertHistory([]);
+      setLastAlertTime(null);
       AudioService.speak('Navia Safety Monitoring active via Groq.');
     } else {
       AudioService.speak('Navia deactivated.');
       setStatus('Ready');
+      // Reset tracking when stopping
+      lastGuidanceRef.current = '';
+      setAlertHistory([]);
+      setLastAlertTime(null);
     }
   };
 
@@ -127,31 +162,86 @@ export default function App() {
     }
   }, [location, isNavigating]);
 
+  // FIXED: Complete navigation handler with proper map display
   const handleStartNavigation = async (targetOverride = null) => {
     const targetDest = targetOverride || destination;
-    if (!targetDest) return;
+    
+    // Validation
+    if (!targetDest || targetDest.trim().length === 0) {
+      Alert.alert("No Destination", "Please enter a destination first.");
+      return;
+    }
 
     // Stop chat if running, as navigation takes over audio
     if (chatActiveRef.current) await stopChatSession();
 
     setShowSearch(false);
     setIsConfirmingVoice(false);
+    setIsSearchingRoute(true); // Show loading state
+    setStatus('Searching for route...');
     AudioService.speak(`Searching for ${targetDest}`);
 
-    const target = await MapUtils.geocode(targetDest);
-    if (target && location) {
+    try {
+      // Step 1: Geocode destination
+      const target = await MapUtils.geocode(targetDest);
+      
+      if (!target) {
+        setStatus('Destination not found');
+        setIsSearchingRoute(false);
+        AudioService.speak("Destination not found. Please try a different location.");
+        Alert.alert("Not Found", `Could not find "${targetDest}". Try being more specific with the address.`);
+        return;
+      }
+
+      // Step 2: Check location availability
+      if (!location) {
+        setStatus('Location unavailable');
+        setIsSearchingRoute(false);
+        AudioService.speak("Your location is not available yet. Please wait.");
+        Alert.alert("Location Error", "Waiting for GPS signal. Please try again in a moment.");
+        return;
+      }
+
+      // Step 3: Get directions
       const route = await MapUtils.getDirections(location, target);
-      if (route) {
+      
+      if (route && route.coordinates && route.coordinates.length > 0) {
+        // SUCCESS: Route found
         NavigationService.startRoute(route);
         setActiveRouteData(route);
         setIsNavigating(true);
-        AudioService.speak(`Route found. ${NavigationService.getInstructionForStep(0)}`);
+        setShowMap(true); // ⭐ KEY FIX: Automatically show map with route
+        setIsSearchingRoute(false);
+        
+        const instruction = NavigationService.getInstructionForStep(0);
+        setStatus(`NAV: ${instruction}`);
+        AudioService.speak(`Route found. ${instruction}`);
       } else {
+        // No route available
+        setStatus('No route found');
+        setIsSearchingRoute(false);
         AudioService.speak("Could not find a walking route to that location.");
+        Alert.alert("No Route", "Unable to find a walking route. The destination may be too far or inaccessible on foot.");
       }
-    } else {
-      AudioService.speak("Destination not found.");
+    } catch (error) {
+      console.error("Navigation Error:", error);
+      setStatus('Navigation error');
+      setIsSearchingRoute(false);
+      AudioService.speak("There was an error finding the route. Please try again.");
+      Alert.alert("Error", "Failed to start navigation. Please check your internet connection and try again.");
     }
+  };
+
+  // NEW: Stop navigation function
+  const handleStopNavigation = () => {
+    setIsNavigating(false);
+    setActiveRouteData(null);
+    setShowMap(false);
+    if (NavigationService.stopRoute) {
+      NavigationService.stopRoute();
+    }
+    AudioService.speak("Navigation stopped.");
+    setStatus('Ready');
   };
 
   const stopChatSession = async () => {
@@ -160,7 +250,6 @@ export default function App() {
     setIsListening(false);
     await VoiceService.stopListening();
     AudioService.stop();
-    // AudioService.speak("Chat ended."); // Optional confirmation
     setStatus("Ready");
   };
 
@@ -298,6 +387,27 @@ export default function App() {
     setStatus('Ready');
   }, []);
 
+  // Timer to show "seconds ago" for last alert
+  const getTimeSinceLastAlert = () => {
+    if (!lastAlertTime || !isLive) return '';
+    const seconds = Math.floor((Date.now() - lastAlertTime) / 1000);
+    if (seconds < 2) return 'Just now';
+    if (seconds < 60) return `${seconds}s ago`;
+    return `${Math.floor(seconds / 60)}m ago`;
+  };
+
+  // Update timer display every second when live
+  useEffect(() => {
+    if (!isLive) return;
+    
+    const interval = setInterval(() => {
+      // Force re-render to update time display
+      setLastAlertTime(prev => prev);
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [isLive]);
+
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" />
@@ -332,6 +442,27 @@ export default function App() {
               />
             )}
           </View>
+
+          {/* Show current detection in live mode */}
+          {isLive && status !== 'Ready' && (
+            <View style={styles.liveStatusCard}>
+              <Text style={styles.liveStatusText}>{status}</Text>
+              {lastAlertTime && (
+                <Text style={styles.timestampText}>{getTimeSinceLastAlert()}</Text>
+              )}
+            </View>
+          )}
+
+          {/* Alert history (last 3 detections) */}
+          {isLive && alertHistory.length > 0 && (
+            <View style={styles.historyContainer}>
+              {alertHistory.slice(0, 3).map((alert, index) => (
+                <Text key={index} style={[styles.historyText, { opacity: 1 - (index * 0.3) }]}>
+                  {index === 0 ? '→ ' : '  '}{alert}
+                </Text>
+              ))}
+            </View>
+          )}
         </View>
       </TouchableOpacity>
 
@@ -347,15 +478,27 @@ export default function App() {
         {/* Top row - 2 equal buttons */}
         <View style={styles.buttonRow}>
           <TouchableOpacity
-            style={[styles.actionButton, showMap && styles.buttonActive]}
-            onPress={() => setShowMap(!showMap)}
+            style={[styles.actionButton, (showMap || isNavigating) && styles.buttonActive]}
+            onPress={() => {
+              if (isNavigating) {
+                // Stop navigation
+                handleStopNavigation();
+              } else {
+                // Toggle map
+                setShowMap(!showMap);
+              }
+            }}
             accessible={true}
-            accessibilityLabel={showMap ? 'Hide map' : 'Show map'}
+            accessibilityLabel={isNavigating ? 'Stop navigation' : (showMap ? 'Hide map' : 'Show map')}
             accessibilityRole="button"
-            accessibilityState={{ selected: showMap }}
+            accessibilityState={{ selected: showMap || isNavigating }}
           >
-            <Text style={styles.buttonIcon}>{showMap ? '📍' : '🗺️'}</Text>
-            <Text style={styles.buttonLabel}>{showMap ? 'HIDE' : 'MAP'}</Text>
+            <Text style={styles.buttonIcon}>
+              {isNavigating ? '⏹️' : (showMap ? '📍' : '🗺️')}
+            </Text>
+            <Text style={styles.buttonLabel}>
+              {isNavigating ? 'STOP' : (showMap ? 'HIDE' : 'MAP')}
+            </Text>
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -409,6 +552,14 @@ export default function App() {
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Destination</Text>
             
+            {/* NEW: Loading indicator during route search */}
+            {isSearchingRoute && (
+              <View style={styles.loadingBanner}>
+                <ActivityIndicator color="#00FF00" size="small" />
+                <Text style={styles.loadingText}>Finding route...</Text>
+              </View>
+            )}
+            
             <TextInput
               style={styles.textInput}
               placeholder="Where to?"
@@ -421,9 +572,10 @@ export default function App() {
               autoFocus
               accessible={true}
               accessibilityLabel="Destination input"
+              editable={!isSearchingRoute}
             />
             
-            {isConfirmingVoice && (
+            {isConfirmingVoice && !isSearchingRoute && (
               <View style={styles.confirmBanner}>
                 <Text style={styles.confirmText}>📍 {destination}</Text>
               </View>
@@ -437,6 +589,7 @@ export default function App() {
                 accessible={true}
                 accessibilityLabel={isListening ? 'Stop listening' : 'Voice input'}
                 accessibilityRole="button"
+                disabled={isSearchingRoute}
               >
                 <Text style={styles.modalButtonIcon}>🎤</Text>
                 <Text style={styles.modalButtonText}>
@@ -445,11 +598,12 @@ export default function App() {
               </TouchableOpacity>
 
               <TouchableOpacity 
-                style={[styles.modalButton, styles.goButton]} 
+                style={[styles.modalButton, styles.goButton, isSearchingRoute && styles.buttonDisabled]} 
                 onPress={handleStartNavigation}
                 accessible={true}
                 accessibilityLabel="Start navigation"
                 accessibilityRole="button"
+                disabled={isSearchingRoute}
               >
                 <Text style={styles.modalButtonIcon}>✓</Text>
                 <Text style={styles.modalButtonText}>START</Text>
@@ -457,7 +611,10 @@ export default function App() {
 
               <TouchableOpacity 
                 style={[styles.modalButton, styles.cancelButton]} 
-                onPress={() => setShowSearch(false)}
+                onPress={() => {
+                  setShowSearch(false);
+                  setIsSearchingRoute(false);
+                }}
                 accessible={true}
                 accessibilityLabel="Cancel"
                 accessibilityRole="button"
@@ -515,6 +672,45 @@ const styles = StyleSheet.create({
   },
   activityIndicator: {
     marginLeft: 8,
+  },
+
+  // Live mode status card
+  liveStatusCard: {
+    marginTop: 8,
+    backgroundColor: '#001100',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: '#00FF00',
+  },
+  liveStatusText: {
+    color: '#00FF00',
+    fontSize: 16,
+    fontWeight: 'bold',
+    textAlign: 'center',
+  },
+  timestampText: {
+    color: '#00AA00',
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 4,
+  },
+
+  // Alert history
+  historyContainer: {
+    marginTop: 8,
+    backgroundColor: '#000000',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#003300',
+  },
+  historyText: {
+    color: '#00AA00',
+    fontSize: 12,
+    marginVertical: 2,
   },
 
   // Map overlay
@@ -621,6 +817,26 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     letterSpacing: 2,
   },
+  
+  // NEW: Loading banner
+  loadingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#003300',
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: '#00FF00',
+    marginBottom: 16,
+    gap: 10,
+  },
+  loadingText: {
+    color: '#00FF00',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  
   textInput: {
     backgroundColor: '#000000',
     color: '#FFFFFF',
@@ -674,6 +890,9 @@ const styles = StyleSheet.create({
   cancelButton: {
     backgroundColor: '#1a1a1a',
     borderColor: '#666666',
+  },
+  buttonDisabled: {
+    opacity: 0.5,
   },
   modalButtonIcon: {
     fontSize: 24,
