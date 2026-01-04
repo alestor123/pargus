@@ -74,9 +74,9 @@ export default function App() {
 
       const photo = await cameraRef.current.takePictureAsync({
         base64: true,
-        quality: isLive ? 0.05 : 0.1,
+        quality: 0.2, // Slightly higher quality but still fast
         shutterSound: false,
-        skipProcessing: isLive
+        skipProcessing: true // CRITICAL: This bypasses orientation correction etc for speed
       });
 
       const guidance = await GroqService.analyzeImage(photo.base64);
@@ -104,13 +104,22 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      const hasPermission = await LocationService.requestPermissions();
-      if (hasPermission) {
+      // Parallel permissions request
+      const [locationPerm, voicePerm] = await Promise.all([
+        LocationService.requestPermissions(),
+        VoiceService.requestPermissions()
+      ]);
+
+      if (locationPerm) {
         const coords = await LocationService.getCurrentLocation();
         setLocation(coords);
         LocationService.watchLocation((newCoords) => {
           setLocation(newCoords);
         });
+      }
+
+      if (!voicePerm) {
+        Alert.alert("Permission Required", "Microphone access is needed for voice commands.");
       }
     })();
   }, []);

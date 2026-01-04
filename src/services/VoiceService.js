@@ -1,3 +1,5 @@
+import { Audio } from 'expo-av';
+
 class VoiceService {
     constructor() {
         this.isListening = false;
@@ -5,6 +7,16 @@ class VoiceService {
         this.onErrorCallback = null;
         this.onStartCallback = null;
         this.bridgeExecutor = null;
+    }
+
+    async requestPermissions() {
+        try {
+            const { status } = await Audio.requestPermissionsAsync();
+            return status === 'granted';
+        } catch (e) {
+            console.error("PERMISSION_ERROR:", e);
+            return false;
+        }
     }
 
     /**

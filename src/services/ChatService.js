@@ -2,9 +2,9 @@ import Groq from "groq-sdk";
 
 class ChatService {
     constructor() {
-        this.apiKey = "placeholder_key"; // Set this locally or via ENV
+        this.apiKey = "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"; // Set this locally or via ENV
         this.groq = null;
-        this.model = "llama3-8b-8192"; // Fast, conversational model
+        this.model = "llama-3.1-8b-instant"; // Fast, supported conversational model
         this.history = [
             { role: "system", content: "You are Navia, a friendly and empathetic voice assistant for the visually impaired. Keep responses concise (under 30 words), helpful, and conversational. Use a natural tone as if chatting with a friend. If asked about surroundings, acknowledge you are also monitoring for safety." }
         ];
@@ -20,6 +20,11 @@ class ChatService {
     }
 
     async getChatResponse(userMessage, locationContext = null) {
+        // Lazy init if missing (e.g., hot reload or delayed key)
+        if (!this.groq && this.apiKey && this.apiKey !== "placeholder_key") {
+            this.groq = new Groq({ apiKey: this.apiKey, dangerouslyAllowBrowser: true });
+        }
+
         if (!this.groq) return "Assistant is not configured. Please check API key.";
 
         try {
