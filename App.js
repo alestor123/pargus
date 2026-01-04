@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, View, Text, StatusBar, TouchableOpacity, ActivityIndicator, Linking } from 'react-native';
+import { StyleSheet, View, Text, StatusBar, TouchableOpacity, ActivityIndicator, Linking, Dimensions } from 'react-native';
 import CameraView from './src/components/CameraView';
 import AudioService from './src/services/AudioService';
 import GroqService from './src/services/GroqService';
@@ -31,13 +31,10 @@ export default function App() {
   const [isChatting, setIsChatting] = useState(false);
   const [isConfirmingVoice, setIsConfirmingVoice] = useState(false);
 
-  // Handle incoming live alerts from WebSocket
   // Handle incoming live alerts from Groq (Now simple text)
   const handleLiveAlert = async (guidance) => {
     try {
       if (guidance && guidance.trim().length > 0) {
-        // calculated priority based on keywords? optional.
-        // For now, just speak it.
         await AudioService.speak(guidance);
         setStatus(guidance.toUpperCase());
       }
@@ -205,12 +202,7 @@ export default function App() {
         if (error === 'INITIALIZING') {
           setTimeout(() => { if (chatActiveRef.current) runChatLoop(); }, 1000);
         } else {
-          // If error (silence usually), try again or prompt?
-          // Ideally we don't spam if it's constantly erroring.
-          // Let's try to prompt once and continue.
           console.log("Chat Loop Error:", error);
-          // Just listen again silently or maybe give up after N retries?
-          // For simple "continuous", we'll just try again.
           if (chatActiveRef.current) {
             runChatLoop();
           }
@@ -271,8 +263,6 @@ export default function App() {
   const openGoogleMaps = () => {
     if (location) {
       const url = `google.navigation:q=desired+destination&mode=w`;
-      // Note: "desired destination" can be replaced with a search term or specific lat,long
-      // For walking mode specifically: mode=w
       Linking.openURL(url).catch(err => console.error("LINKING_ERROR", err));
     } else {
       AudioService.speak('Location not available yet.');
@@ -313,70 +303,115 @@ export default function App() {
       <StatusBar barStyle="light-content" />
       <CameraView cameraRef={cameraRef} onCameraReady={() => setIsCameraReady(true)} />
 
+      {/* Main touchable area - optimized for quick access */}
       <TouchableOpacity
         activeOpacity={1}
         style={styles.scanArea}
         onPress={analyzeEnvironment}
         disabled={isAnalyzing || isLive}
+        accessible={true}
+        accessibilityLabel="Instant environment check"
+        accessibilityHint="Double tap to analyze surroundings"
+        accessibilityRole="button"
       >
-        {/* Status banner */}
-        <View style={styles.statusBanner}>
-          <Text style={styles.statusText}>
-            {isLive ? '🔴 LIVE (NAVIA SAFETY)' : `NAVIA: ${status}`}
-          </Text>
+        {/* Compact status banner at top */}
+        <View style={styles.statusContainer}>
+          <View style={styles.statusBanner}>
+            <Text 
+              style={styles.statusText}
+              accessibilityLiveRegion="polite"
+              numberOfLines={2}
+            >
+              {isLive ? '🔴 LIVE' : status.toUpperCase()}
+            </Text>
+            {isAnalyzing && !isLive && (
+              <ActivityIndicator 
+                color="#00FF00" 
+                size="small"
+                style={styles.activityIndicator}
+              />
+            )}
+          </View>
         </View>
       </TouchableOpacity>
 
-      <View style={styles.controls}>
-        <TouchableOpacity
-          style={[styles.smallButton, showMap && styles.buttonActive]}
-          onPress={() => setShowMap(!showMap)}
-          accessibilityLabel="Toggle Map View"
-        >
-          <Text style={styles.buttonText}>{showMap ? 'HIDE MAP' : 'SHOW MAP'}</Text>
-        </TouchableOpacity>
+      {/* Map overlay - only when visible */}
+      {showMap && location && (
+        <View style={styles.mapOverlay}>
+          <MapComponent location={location} routeData={activeRouteData} />
+        </View>
+      )}
 
-        <TouchableOpacity
-          style={[styles.liveToggleButton, isLive && styles.liveActive]}
-          onPress={toggleLiveMode}
-          accessibilityLabel={isLive ? "Stop Navia Safety Monitoring" : "Start Navia Continuous Safety Monitoring"}
-          accessibilityRole="button"
-          accessibilityHint="Toggles between continuous safety alerts and standby mode."
-        >
-          <Text style={styles.buttonText}>
-            {isLive ? 'STOP NAVIA' : 'START NAVIA'}
-          </Text>
-        </TouchableOpacity>
+      {/* Optimized control panel - larger buttons in 2x2 grid */}
+      <View style={styles.controlPanel}>
+        {/* Top row - 2 equal buttons */}
+        <View style={styles.buttonRow}>
+          <TouchableOpacity
+            style={[styles.actionButton, showMap && styles.buttonActive]}
+            onPress={() => setShowMap(!showMap)}
+            accessible={true}
+            accessibilityLabel={showMap ? 'Hide map' : 'Show map'}
+            accessibilityRole="button"
+            accessibilityState={{ selected: showMap }}
+          >
+            <Text style={styles.buttonIcon}>{showMap ? '📍' : '🗺️'}</Text>
+            <Text style={styles.buttonLabel}>{showMap ? 'HIDE' : 'MAP'}</Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          style={styles.smallButton}
-          onPress={async () => {
-            if (isChatting) await stopChatSession();
-            setShowSearch(true);
-          }}
-          accessibilityLabel="Set Destination"
-        >
-          <Text style={styles.buttonText}>GOAL</Text>
-        </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={async () => {
+              if (isChatting) await stopChatSession();
+              setShowSearch(true);
+            }}
+            accessible={true}
+            accessibilityLabel="Set destination"
+            accessibilityRole="button"
+          >
+            <Text style={styles.buttonIcon}>🎯</Text>
+            <Text style={styles.buttonLabel}>GOAL</Text>
+          </TouchableOpacity>
+        </View>
 
-        <TouchableOpacity
-          style={[styles.smallButton, isChatting && styles.buttonActive, isChatting && { backgroundColor: '#c00', borderColor: '#f00' }]}
-          onPress={toggleChatSession}
-          accessibilityLabel="Chat with Navia Assistant"
-        >
-          <Text style={styles.buttonText}>
-            {isChatting ? (isListening ? 'LISTENING...' : 'STOP CHAT') : 'CHAT'}
-          </Text>
-        </TouchableOpacity>
+        {/* Bottom row - 2 equal buttons */}
+        <View style={styles.buttonRow}>
+          <TouchableOpacity
+            style={[styles.actionButton, styles.primaryButton, isLive && styles.liveActive]}
+            onPress={toggleLiveMode}
+            accessible={true}
+            accessibilityLabel={isLive ? "Stop monitoring" : "Start monitoring"}
+            accessibilityRole="button"
+            accessibilityState={{ selected: isLive }}
+          >
+            <Text style={styles.buttonIcon}>{isLive ? '⏹️' : '▶️'}</Text>
+            <Text style={styles.buttonLabel}>{isLive ? 'STOP' : 'START'}</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.actionButton, isChatting && styles.chatActive]}
+            onPress={toggleChatSession}
+            accessible={true}
+            accessibilityLabel={isChatting ? (isListening ? 'Listening' : 'Stop chat') : 'Start chat'}
+            accessibilityRole="button"
+            accessibilityState={{ selected: isChatting }}
+          >
+            <Text style={styles.buttonIcon}>{isChatting ? (isListening ? '🎤' : '💬') : '💬'}</Text>
+            <Text style={styles.buttonLabel}>
+              {isChatting ? (isListening ? 'LISTEN' : 'STOP') : 'CHAT'}
+            </Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
+      {/* Streamlined modal */}
       <Modal visible={showSearch} transparent animationType="fade">
-        <View style={styles.modalContainer}>
-          <View style={styles.searchBox}>
-            <Text style={styles.modalTitle}>Where to?</Text>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Destination</Text>
+            
             <TextInput
-              style={styles.searchInput}
-              placeholder="Enter destination..."
+              style={styles.textInput}
+              placeholder="Where to?"
               placeholderTextColor="#666"
               value={destination}
               onChangeText={(text) => {
@@ -384,26 +419,51 @@ export default function App() {
                 setIsConfirmingVoice(false);
               }}
               autoFocus
+              accessible={true}
+              accessibilityLabel="Destination input"
             />
+            
             {isConfirmingVoice && (
-              <Text style={[styles.instructionText, { color: '#00FF00', marginBottom: 10, textAlign: 'center' }]}>
-                Confirming: {destination}?
-              </Text>
+              <View style={styles.confirmBanner}>
+                <Text style={styles.confirmText}>📍 {destination}</Text>
+              </View>
             )}
-            <View style={styles.modalButtons}>
+
+            {/* Stacked modal buttons for easy access */}
+            <View style={styles.modalButtonContainer}>
               <TouchableOpacity
-                style={[styles.modalButton, isListening && { backgroundColor: '#c00' }]}
+                style={[styles.modalButton, styles.voiceButton, isListening && styles.listeningButton]}
                 onPress={isListening ? () => VoiceService.stopListening() : startVoiceSearch}
+                accessible={true}
+                accessibilityLabel={isListening ? 'Stop listening' : 'Voice input'}
+                accessibilityRole="button"
               >
+                <Text style={styles.modalButtonIcon}>🎤</Text>
                 <Text style={styles.modalButtonText}>
-                  {isListening ? 'LISTENING...' : '🎤 GOOGLE VOICE'}
+                  {isListening ? 'LISTENING...' : 'VOICE INPUT'}
                 </Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.modalButton} onPress={() => setShowSearch(false)}>
-                <Text style={styles.modalButtonText}>CANCEL</Text>
+
+              <TouchableOpacity 
+                style={[styles.modalButton, styles.goButton]} 
+                onPress={handleStartNavigation}
+                accessible={true}
+                accessibilityLabel="Start navigation"
+                accessibilityRole="button"
+              >
+                <Text style={styles.modalButtonIcon}>✓</Text>
+                <Text style={styles.modalButtonText}>START</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.modalButton, { backgroundColor: '#007AFF' }]} onPress={handleStartNavigation}>
-                <Text style={styles.modalButtonText}>GO</Text>
+
+              <TouchableOpacity 
+                style={[styles.modalButton, styles.cancelButton]} 
+                onPress={() => setShowSearch(false)}
+                accessible={true}
+                accessibilityLabel="Cancel"
+                accessibilityRole="button"
+              >
+                <Text style={styles.modalButtonIcon}>✕</Text>
+                <Text style={styles.modalButtonText}>CANCEL</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -411,20 +471,6 @@ export default function App() {
       </Modal>
 
       <VoiceWebView />
-
-      {showMap && location && (
-        <View style={styles.mapContainer}>
-          <MapComponent location={location} routeData={activeRouteData} />
-        </View>
-      )}
-
-      {/* Accessible instructions */}
-      <View style={styles.instructions} accessibilityLabel="Instructions: Navia Safety is active. Top area for immediate surroundings check, bottom button for continuous monitoring.">
-        <Text style={styles.instructionText}>
-          {isLive ? 'Navia is Watching...' : 'Tap top for quick check'}
-        </Text>
-        {isAnalyzing && !isLive && <ActivityIndicator color="#fff" style={{ marginTop: 10 }} />}
-      </View>
     </View>
   );
 }
@@ -436,133 +482,206 @@ const styles = StyleSheet.create({
   },
   scanArea: {
     position: 'absolute',
-    top: 0,
+    top: 100,
     left: 0,
     right: 0,
-    bottom: 120,
+    bottom: 200,
+  },
+  
+  // Compact status at top
+  statusContainer: {
+    position: 'absolute',
+    top: 10,
+    left: 15,
+    right: 15,
   },
   statusBanner: {
-    marginTop: 50,
-    marginHorizontal: 20,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    padding: 10,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#fff',
+    backgroundColor: '#000000',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    borderWidth: 3,
+    borderColor: '#00FF00',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   statusText: {
-    color: '#0f0',
+    color: '#00FF00',
     fontSize: 18,
     fontWeight: 'bold',
     textAlign: 'center',
-  },
-  liveToggleButton: {
-    flex: 2,
-    height: 80,
-    backgroundColor: '#333',
-    borderRadius: 40,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#fff',
-    marginHorizontal: 5,
-  },
-  smallButton: {
     flex: 1,
-    height: 80,
-    backgroundColor: '#333',
-    borderRadius: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#fff',
-    marginHorizontal: 5,
   },
-  buttonActive: {
-    backgroundColor: '#007AFF',
-    borderColor: '#007AFF',
+  activityIndicator: {
+    marginLeft: 8,
   },
-  liveActive: {
-    backgroundColor: '#c00',
-    borderColor: '#f00',
-  },
-  controls: {
+
+  // Map overlay
+  mapOverlay: {
     position: 'absolute',
-    bottom: 40,
-    left: 10,
-    right: 10,
-    flexDirection: 'row',
+    top: 70,
+    left: 15,
+    right: 15,
+    bottom: 220,
+    backgroundColor: '#000',
+    borderWidth: 3,
+    borderColor: '#00FF00',
+    borderRadius: 12,
+    overflow: 'hidden',
   },
-  buttonText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: 'bold',
-    textAlign: 'center',
-  },
-  mapContainer: {
+
+  // Optimized control panel - 2x2 grid
+  controlPanel: {
     position: 'absolute',
-    top: 110,
+    bottom: 0,
     left: 0,
     right: 0,
-    bottom: 130,
-    backgroundColor: '#000',
+    backgroundColor: '#000000',
+    paddingTop: 15,
+    paddingBottom: 30,
+    paddingHorizontal: 15,
+    borderTopWidth: 3,
+    borderTopColor: '#00FF00',
   },
-  instructions: {
-    position: 'absolute',
-    bottom: 140,
-    width: '100%',
-    alignItems: 'center',
+  buttonRow: {
+    flexDirection: 'row',
+    marginBottom: 10,
+    gap: 10,
   },
-  instructionText: {
-    color: '#fff',
-    fontSize: 14,
-    opacity: 0.8,
-  },
-  modalContainer: {
+  
+  // Large, easy-to-find buttons
+  actionButton: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.9)',
+    height: 85,
+    backgroundColor: '#1a1a1a',
+    borderRadius: 16,
+    borderWidth: 3,
+    borderColor: '#00FF00',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#00FF00',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  primaryButton: {
+    borderWidth: 4,
+    shadowOpacity: 0.6,
+    shadowRadius: 12,
+  },
+  buttonActive: {
+    backgroundColor: '#003300',
+    borderColor: '#00FF00',
+  },
+  liveActive: {
+    backgroundColor: '#330000',
+    borderColor: '#FF0000',
+    shadowColor: '#FF0000',
+  },
+  chatActive: {
+    backgroundColor: '#1a0033',
+    borderColor: '#9933FF',
+    shadowColor: '#9933FF',
+  },
+  buttonIcon: {
+    fontSize: 32,
+    marginBottom: 4,
+  },
+  buttonLabel: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+  },
+
+  // Modal - centered and efficient
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.96)',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 20,
   },
-  searchBox: {
+  modalContent: {
     width: '100%',
-    backgroundColor: '#222',
-    padding: 20,
+    maxWidth: 450,
+    backgroundColor: '#0a0a0a',
     borderRadius: 20,
-    borderWidth: 1,
-    borderColor: '#444',
+    borderWidth: 3,
+    borderColor: '#00FF00',
+    padding: 24,
   },
   modalTitle: {
-    color: '#fff',
-    fontSize: 24,
+    color: '#00FF00',
+    fontSize: 32,
     fontWeight: 'bold',
-    marginBottom: 20,
     textAlign: 'center',
-  },
-  searchInput: {
-    backgroundColor: '#333',
-    color: '#fff',
-    padding: 15,
-    borderRadius: 10,
-    fontSize: 18,
     marginBottom: 20,
+    letterSpacing: 2,
   },
-  modalButtons: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+  textInput: {
+    backgroundColor: '#000000',
+    color: '#FFFFFF',
+    fontSize: 20,
+    padding: 18,
+    borderRadius: 12,
+    borderWidth: 3,
+    borderColor: '#00FF00',
+    marginBottom: 16,
   },
-  modalButton: {
-    flex: 1,
-    padding: 15,
+  confirmBanner: {
+    backgroundColor: '#003300',
+    padding: 12,
     borderRadius: 10,
-    backgroundColor: '#444',
-    marginHorizontal: 5,
+    borderWidth: 2,
+    borderColor: '#00FF00',
+    marginBottom: 16,
     alignItems: 'center',
   },
-  modalButtonText: {
-    color: '#fff',
-    fontSize: 16,
+  confirmText: {
+    color: '#00FF00',
+    fontSize: 18,
     fontWeight: 'bold',
+  },
+
+  // Modal buttons - stacked vertically for easy access
+  modalButtonContainer: {
+    gap: 12,
+  },
+  modalButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 18,
+    borderRadius: 12,
+    borderWidth: 3,
+    gap: 10,
+  },
+  voiceButton: {
+    backgroundColor: '#1a0033',
+    borderColor: '#9933FF',
+  },
+  listeningButton: {
+    backgroundColor: '#330000',
+    borderColor: '#FF0000',
+  },
+  goButton: {
+    backgroundColor: '#003300',
+    borderColor: '#00FF00',
+  },
+  cancelButton: {
+    backgroundColor: '#1a1a1a',
+    borderColor: '#666666',
+  },
+  modalButtonIcon: {
+    fontSize: 24,
+  },
+  modalButtonText: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: 'bold',
+    letterSpacing: 1,
   },
 });
