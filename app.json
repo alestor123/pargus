@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "ARGUS",
-    "slug": "ARGUS",
+    "name": "NAVIA",
+    "slug": "NAVIA",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -14,7 +14,7 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.anonymous.ARGUS"
+      "bundleIdentifier": "com.anonymous.NAVIA"
     },
     "android": {
       "adaptiveIcon": {
@@ -25,7 +25,7 @@
       "permissions": [
         "android.permission.RECORD_AUDIO"
       ],
-      "package": "com.anonymous.ARGUS"
+      "package": "com.anonymous.navia"
     },
     "web": {
       "favicon": "./assets/favicon.png"
